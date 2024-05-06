@@ -4,6 +4,7 @@ import requests
 import traceback
 import json
 import base64
+import uuid
 import runpod
 from runpod.serverless.utils.rp_validator import validate
 from runpod.serverless.modules.rp_logger import RunPodLogger
@@ -103,10 +104,26 @@ def get_workflow_payload(workflow_name, payload):
     return workflow
 
 
+"""
+Get the filenames of the output images
+"""
 def get_filenames(output):
     for key, value in output.items():
         if 'images' in value and isinstance(value['images'], list):
             return value['images']
+
+
+"""
+Create a unique filename prefix for each request to avoid a race condition where
+more than one request completes at the same time, which can either result in the
+incorrect output being returned, or the output image not being found.
+"""
+def create_unique_filename_prefix(payload):
+    for key, value in payload.items():
+        class_type = value.get('class_type')
+
+        if class_type == 'SaveImage':
+            payload[key]['inputs']['filename_prefix'] = str(uuid.uuid4())
 
 
 # ---------------------------------------------------------------------------- #
@@ -126,6 +143,7 @@ def handler(event):
         payload = validated_input['validated_input']
         workflow_name = payload['workflow']
         payload = payload['payload']
+        create_unique_filename_prefix(payload)
 
         if workflow_name == 'default':
             workflow_name = 'txt2img'
@@ -139,7 +157,7 @@ def handler(event):
                 logger.error(f'Unable to load workflow payload for: {workflow_name}', job_id)
                 raise
 
-        logger.debug('Queuing prompt')
+        logger.debug('Queuing prompt', job_id)
 
         queue_response = send_post_request(
             'prompt',
