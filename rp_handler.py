@@ -143,7 +143,6 @@ def handler(event):
         payload = validated_input['validated_input']
         workflow_name = payload['workflow']
         payload = payload['payload']
-        create_unique_filename_prefix(payload)
 
         if workflow_name == 'default':
             workflow_name = 'txt2img'
@@ -157,6 +156,7 @@ def handler(event):
                 logger.error(f'Unable to load workflow payload for: {workflow_name}', job_id)
                 raise
 
+        create_unique_filename_prefix(payload)
         logger.debug('Queuing prompt', job_id)
 
         queue_response = send_post_request(
