@@ -15,6 +15,7 @@ from schemas.input import INPUT_SCHEMA
 BASE_URI = 'http://127.0.0.1:3000'
 VOLUME_MOUNT_PATH = '/runpod-volume'
 TIMEOUT = 600
+LOG_LEVEL = 'INFO'
 
 session = requests.Session()
 retries = Retry(total=10, backoff_factor=0.1, status_forcelist=[502, 503, 504])
@@ -172,7 +173,7 @@ def handler(event):
             logger.info(f'Prompt queued successfully: {prompt_id}', job_id)
 
             while True:
-                logger.debug(f'Getting status of prompt: {prompt_id}', job_id)
+                logger.info(f'Getting status of prompt: {prompt_id}', job_id)
                 r = send_get_request(f'history/{prompt_id}')
                 resp_json = r.json()
 
@@ -200,7 +201,8 @@ def handler(event):
                     'images': images
                 }
             else:
-                raise RuntimeError('No output found, please ensure that the model is correct and that it exists')
+                logger.info(f'Response JSON: {resp_json}', job_id)
+                raise RuntimeError(f'No output found for prompt id {prompt_id}, please ensure that the model is correct and that it exists')
         else:
             try:
                 queue_response_content = queue_response.json()
@@ -224,6 +226,7 @@ def handler(event):
 
 
 if __name__ == '__main__':
+    logger.set_level(LOG_LEVEL)
     wait_for_service(url=f'{BASE_URI}/system_stats')
     logger.info('ComfyUI API is ready')
     logger.info('Starting RunPod Serverless...')
