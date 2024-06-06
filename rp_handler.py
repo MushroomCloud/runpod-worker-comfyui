@@ -171,9 +171,13 @@ def handler(event):
             resp_json = queue_response.json()
             prompt_id = resp_json['prompt_id']
             logger.info(f'Prompt queued successfully: {prompt_id}', job_id)
+            retries = 0
 
             while True:
-                logger.info(f'Getting status of prompt: {prompt_id}', job_id)
+                # Only log every 15 retries so the logs don't get spammed
+                if retries == 0 or retries % 15 == 0:
+                    logger.info(f'Getting status of prompt: {prompt_id}', job_id)
+
                 r = send_get_request(f'history/{prompt_id}')
                 resp_json = r.json()
 
@@ -181,6 +185,7 @@ def handler(event):
                     break
 
                 time.sleep(0.2)
+                retries += 1
 
             if len(resp_json[prompt_id]['outputs']):
                 logger.info(f'Images generated successfully for prompt: {prompt_id}', job_id)
