@@ -215,22 +215,24 @@ def handler(event):
                         'images': images
                     }
                 else:
-                    error_msg = f'No output found for prompt id {prompt_id}, please ensure that the model is correct and that it exists'
-                    logging.error(error_msg)
-                    logging.info(f'{job_id}: Response JSON: {resp_json}')
-                    rp_logger.info(f'Response JSON: {resp_json}', job_id)
-                    raise RuntimeError(error_msg)
+                    raise RuntimeError(f'No output found for prompt id: {prompt_id}')
             else:
                 # Job did not process successfully
                 for message in status['messages']:
                     key, value = message
+
                     if key == 'execution_error':
                         if 'node_type' in value and 'exception_message' in value:
                             node_type = value['node_type']
                             exception_message = value['exception_message']
                             raise RuntimeError(f'{node_type}: {exception_message}')
                         else:
-                            raise RuntimeError('Job did not process successfully')
+                            # Log to file instead of RunPod because the output tends to be too verbose
+                            # and gets dropped by RunPod logging
+                            error_msg = f'Job did not process successfully for prompt_id: {prompt_id}'
+                            logging.error(error_msg)
+                            logging.info(f'{job_id}: Response JSON: {resp_json}')
+                            raise RuntimeError(error_msg)
 
         else:
             try:
