@@ -190,30 +190,48 @@ def handler(event):
                 time.sleep(0.2)
                 retries += 1
 
-            if len(resp_json[prompt_id]['outputs']):
-                rp_logger.info(f'Images generated successfully for prompt: {prompt_id}', job_id)
-                image_filenames = get_filenames(resp_json[prompt_id]['outputs'])
-                images = []
+            status = resp_json[prompt_id]['status']
 
-                for image_filename in image_filenames:
-                    filename = image_filename['filename']
-                    image_path = f'{VOLUME_MOUNT_PATH}/ComfyUI/output/{filename}'
+            if status['status_str'] == 'success' and status['completed']:
+                # Job was processed successfully
+                outputs = resp_json[prompt_id]['outputs']
 
-                    with open(image_path, 'rb') as image_file:
-                        images.append(base64.b64encode(image_file.read()).decode('utf-8'))
+                if len(outputs):
+                    rp_logger.info(f'Images generated successfully for prompt: {prompt_id}', job_id)
+                    image_filenames = get_filenames(outputs)
+                    images = []
 
-                    rp_logger.info(f'Deleting output file: {image_path}', job_id)
-                    os.remove(image_path)
+                    for image_filename in image_filenames:
+                        filename = image_filename['filename']
+                        image_path = f'{VOLUME_MOUNT_PATH}/ComfyUI/output/{filename}'
 
-                return {
-                    'images': images
-                }
+                        with open(image_path, 'rb') as image_file:
+                            images.append(base64.b64encode(image_file.read()).decode('utf-8'))
+
+                        rp_logger.info(f'Deleting output file: {image_path}', job_id)
+                        os.remove(image_path)
+
+                    return {
+                        'images': images
+                    }
+                else:
+                    error_msg = f'No output found for prompt id {prompt_id}, please ensure that the model is correct and that it exists'
+                    logging.error(error_msg)
+                    logging.info(f'{job_id}: Response JSON: {resp_json}')
+                    rp_logger.info(f'Response JSON: {resp_json}', job_id)
+                    raise RuntimeError(error_msg)
             else:
-                error_msg = f'No output found for prompt id {prompt_id}, please ensure that the model is correct and that it exists'
-                logging.error(error_msg)
-                logging.info(f'{job_id}: Response JSON: {resp_json}')
-                rp_logger.info(f'Response JSON: {resp_json}', job_id)
-                raise RuntimeError(error_msg)
+                # Job did not process successfully
+                for message in status['messages']:
+                    key, value = message
+                    if key == 'execution_error':
+                        if 'node_type' in value and 'exception_message' in value:
+                            node_type = value['node_type']
+                            exception_message = value['exception_message']
+                            raise RuntimeError(f'{node_type}: {exception_message}')
+                        else:
+                            raise RuntimeError('Job did not process successfully')
+
         else:
             try:
                 queue_response_content = queue_response.json()
