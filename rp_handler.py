@@ -45,57 +45,59 @@ class SnapLogHandler(logging.Handler):
         self.log_token = os.getenv('LOG_API_TOKEN')
 
     def emit(self, record):
-        # Only log to RunPod logger if the length of the log entry is >= 1000 characters
-        if len(record.message) <= 1000:
-            level_mapping = {
-                logging.DEBUG: self.rp_logger.debug,
-                logging.INFO: self.rp_logger.info,
-                logging.WARNING: self.rp_logger.warn,
-                logging.ERROR: self.rp_logger.error,
-                logging.CRITICAL: self.rp_logger.error
+        if hasattr(record, 'message'):
+            # Only log to RunPod logger if the length of the log entry is >= 1000 characters
+            if len(record.message) <= 1000:
+                level_mapping = {
+                    logging.DEBUG: self.rp_logger.debug,
+                    logging.INFO: self.rp_logger.info,
+                    logging.WARNING: self.rp_logger.warn,
+                    logging.ERROR: self.rp_logger.error,
+                    logging.CRITICAL: self.rp_logger.error
+                }
+
+                # Wrapper to invoke RunPodLogger logging
+                rp_logger = level_mapping.get(record.levelno, self.rp_logger.info)
+                rp_logger(record.message)
+
+            log_payload = {
+                'app_name': self.app_name,
+                'log_asctime': record.asctime,
+                'log_levelname': record.levelname,
+                'log_message': record.message,
+                'runpod_endpoint_id': self.runpod_endpoint_id,
+                'runpod_cpu_count': self.runpod_cpu_count,
+                'runpod_pod_id': self.runpod_pod_id,
+                'runpod_gpu_size': self.runpod_gpu_size,
+                'runpod_mem_gb': self.runpod_mem_gb,
+                'runpod_gpu_count': self.runpod_gpu_count,
+                'runpod_volume_id': self.runpod_volume_id,
+                'runpod_pod_hostname': self.runpod_pod_hostname,
+                'runpod_debug_level': self.runpod_debug_level,
+                'runpod_dc_id': self.runpod_dc_id,
+                'runpod_gpu_name': self.runpod_gpu_name,
+                'runpod_job_id': os.getenv('RUNPOD_JOB_ID')
             }
 
-            # Wrapper to invoke RunPodLogger logging
-            rp_logger = level_mapping.get(record.levelno, self.rp_logger.info)
-            rp_logger(record.message)
-
-        log_payload = {
-            'app_name': self.app_name,
-            'log_asctime': record.asctime,
-            'log_levelname': record.levelname,
-            'log_message': record.message,
-            'runpod_endpoint_id': self.runpod_endpoint_id,
-            'runpod_cpu_count': self.runpod_cpu_count,
-            'runpod_pod_id': self.runpod_pod_id,
-            'runpod_gpu_size': self.runpod_gpu_size,
-            'runpod_mem_gb': self.runpod_mem_gb,
-            'runpod_gpu_count': self.runpod_gpu_count,
-            'runpod_volume_id': self.runpod_volume_id,
-            'runpod_pod_hostname': self.runpod_pod_hostname,
-            'runpod_debug_level': self.runpod_debug_level,
-            'runpod_dc_id': self.runpod_dc_id,
-            'runpod_gpu_name': self.runpod_gpu_name,
-            'runpod_job_id': os.getenv('RUNPOD_JOB_ID')
-        }
-
-        if self.log_api_endpoint:
-            try:
-                headers = {'Authorization': f'Bearer {self.log_token}'}
-                response = session.post(
-                    self.log_api_endpoint,
-                    json=log_payload,
-                    headers=headers,
-                    timeout=self.log_api_timeout
-                )
-                if response.status_code != 200:
-                    self.rp_logger.error(f'Failed to send log to API. Status code: {response.status_code}')
-            except requests.Timeout:
-                self.rp_logger.error(f'Timeout error sending log to API (timeout={self.log_api_timeout}s)')
-            except Exception as e:
-                self.rp_logger.error(f'Error sending log to API: {str(e)}')
+            if self.log_api_endpoint:
+                try:
+                    headers = {'Authorization': f'Bearer {self.log_token}'}
+                    response = requests.post(
+                        self.log_api_endpoint,
+                        json=log_payload,
+                        headers=headers,
+                        timeout=self.log_api_timeout
+                    )
+                    if response.status_code != 200:
+                        self.rp_logger.error(f'Failed to send log to API. Status code: {response.status_code}')
+                except requests.Timeout:
+                    self.rp_logger.error(f'Timeout error sending log to API (timeout={self.log_api_timeout}s)')
+                except Exception as e:
+                    self.rp_logger.error(f'Error sending log to API: {str(e)}')
+            else:
+                self.rp_logger.warn('LOG_API_ENDPOINT environment variable is not set, not logging to API')
         else:
-            self.rp_logger.warn('LOG_API_ENDPOINT environment variable is not set, not logging to API')
-
+            self.rp_logger.warn('LogRecord has no message attribute')
 
 # ---------------------------------------------------------------------------- #
 #                               ComfyUI Functions                              #
@@ -106,7 +108,7 @@ def wait_for_service(url):
 
     while True:
         try:
-            session.get(url)
+            requests.get(url)
             return
         except requests.exceptions.RequestException:
             retries += 1
