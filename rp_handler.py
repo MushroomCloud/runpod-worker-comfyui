@@ -45,10 +45,21 @@ class SnapLogHandler(logging.Handler):
         self.log_token = os.getenv('LOG_API_TOKEN')
 
     def emit(self, record):
+        # Handle string formatting and extra arguments
         if record.args:
-            message = record.msg % record.args
+            if isinstance(record.args, dict):
+                message = record.msg % record.args
+            else:
+                message = record.msg % record.args[:len(record.msg.split('%'))-1]
         else:
             message = record.msg
+
+        # Extract extra arguments (like job_id) if present
+        extra = record.args[len(record.msg.split('%'))-1:] if isinstance(record.args, (list, tuple)) else []
+
+        # Append extra arguments to the message
+        if extra:
+            message += f" (Extra: {', '.join(map(str, extra))})"
 
         # Only log to RunPod logger if the length of the log entry is >= 1000 characters
         if len(message) <= 1000:
