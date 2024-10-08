@@ -45,6 +45,8 @@ class SnapLogHandler(logging.Handler):
         self.log_token = os.getenv('LOG_API_TOKEN')
 
     def emit(self, record):
+        runpod_job_id = os.getenv('RUNPOD_JOB_ID')
+
         # Handle string formatting and extra arguments
         if record.args:
             if isinstance(record.args, dict):
@@ -73,8 +75,11 @@ class SnapLogHandler(logging.Handler):
 
             # Wrapper to invoke RunPodLogger logging
             rp_logger = level_mapping.get(record.levelno, self.rp_logger.info)
-            rp_logger(message)
 
+            if runpod_job_id:
+                rp_logger(message, runpod_job_id)
+            else:
+                rp_logger(message)
         if self.log_api_endpoint:
             try:
                 headers = {'Authorization': f'Bearer {self.log_token}'}
@@ -95,7 +100,7 @@ class SnapLogHandler(logging.Handler):
                     'runpod_debug_level': self.runpod_debug_level,
                     'runpod_dc_id': self.runpod_dc_id,
                     'runpod_gpu_name': self.runpod_gpu_name,
-                    'runpod_job_id': os.getenv('RUNPOD_JOB_ID')
+                    'runpod_job_id': runpod_job_id
                 }
 
                 response = requests.post(
