@@ -241,7 +241,7 @@ def create_unique_filename_prefix(payload):
 def get_container_memory_info(job_id=None):
     """
     Get memory information that's actually allocated to the container using cgroups.
-    Returns a dictionary with memory stats in MB.
+    Returns a dictionary with memory stats in GB.
     Also logs the memory information directly.
     """
     try:
@@ -254,11 +254,11 @@ def get_container_memory_info(job_id=None):
 
             for line in meminfo:
                 if 'MemTotal:' in line:
-                    mem_info['total'] = int(line.split()[1]) / 1024  # Convert from KB to MB
+                    mem_info['total'] = int(line.split()[1]) / (1024 * 1024)  # Convert from KB to GB
                 elif 'MemAvailable:' in line:
-                    mem_info['available'] = int(line.split()[1]) / 1024  # Convert from KB to MB
+                    mem_info['available'] = int(line.split()[1]) / (1024 * 1024)  # Convert from KB to GB
                 elif 'MemFree:' in line:
-                    mem_info['free'] = int(line.split()[1]) / 1024  # Convert from KB to MB
+                    mem_info['free'] = int(line.split()[1]) / (1024 * 1024)  # Convert from KB to GB
 
             # Calculate used memory (may be overridden by container-specific value below)
             if 'total' in mem_info and 'free' in mem_info:
@@ -271,10 +271,10 @@ def get_container_memory_info(job_id=None):
             with open('/sys/fs/cgroup/memory.max', 'r') as f:
                 max_mem = f.read().strip()
                 if max_mem != 'max':  # If set to 'max', it means unlimited
-                    mem_info['limit'] = int(max_mem) / (1024 * 1024)  # Convert B to MB
+                    mem_info['limit'] = int(max_mem) / (1024 * 1024 * 1024)  # Convert B to GB
 
             with open('/sys/fs/cgroup/memory.current', 'r') as f:
-                mem_info['used'] = int(f.read().strip()) / (1024 * 1024)  # Convert B to MB
+                mem_info['used'] = int(f.read().strip()) / (1024 * 1024 * 1024)  # Convert B to GB
 
         except FileNotFoundError:
             # Fall back to cgroups v1 paths (older Docker)
@@ -283,10 +283,10 @@ def get_container_memory_info(job_id=None):
                     mem_limit = int(f.read().strip())
                     # If the value is very large (close to 2^64), it's effectively unlimited
                     if mem_limit < 2**63:
-                        mem_info['limit'] = mem_limit / (1024 * 1024)  # Convert B to MB
+                        mem_info['limit'] = mem_limit / (1024 * 1024 * 1024)  # Convert B to GB
 
                 with open('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'r') as f:
-                    mem_info['used'] = int(f.read().strip()) / (1024 * 1024)  # Convert B to MB
+                    mem_info['used'] = int(f.read().strip()) / (1024 * 1024 * 1024)  # Convert B to GB
 
             except FileNotFoundError:
                 # Try the third possible location for cgroups
@@ -294,10 +294,10 @@ def get_container_memory_info(job_id=None):
                     with open('/sys/fs/cgroup/memory.limit_in_bytes', 'r') as f:
                         mem_limit = int(f.read().strip())
                         if mem_limit < 2**63:
-                            mem_info['limit'] = mem_limit / (1024 * 1024)
+                            mem_info['limit'] = mem_limit / (1024 * 1024 * 1024)  # Convert B to GB
 
                     with open('/sys/fs/cgroup/memory.usage_in_bytes', 'r') as f:
-                        mem_info['used'] = int(f.read().strip()) / (1024 * 1024)
+                        mem_info['used'] = int(f.read().strip()) / (1024 * 1024 * 1024)  # Convert B to GB
 
                 except FileNotFoundError:
                     logging.warning('Could not find cgroup memory information', job_id)
@@ -320,7 +320,7 @@ def get_container_memory_info(job_id=None):
             mem_log_parts.append(f"Free={mem_info['free']:.2f}")
 
         if mem_log_parts:
-            logging.info(f"Container Memory (MB): {', '.join(mem_log_parts)}", job_id)
+            logging.info(f"Container Memory (GB): {', '.join(mem_log_parts)}", job_id)
         else:
             logging.info('Container memory information not available', job_id)
 
