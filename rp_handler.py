@@ -22,6 +22,9 @@ TIMEOUT = 600
 LOG_LEVEL = 'INFO'
 
 
+# ---------------------------------------------------------------------------- #
+#                               Custom Log Handler                             #
+# ---------------------------------------------------------------------------- #
 class SnapLogHandler(logging.Handler):
     def __init__(self, app_name: str):
         super().__init__()
@@ -127,10 +130,10 @@ class SnapLogHandler(logging.Handler):
             # Add error handling for message formatting
             self.rp_logger.error(f'Error in log formatting: {str(e)}')
 
+
 # ---------------------------------------------------------------------------- #
 #                               ComfyUI Functions                              #
 # ---------------------------------------------------------------------------- #
-
 def wait_for_service(url):
     retries = 0
 
@@ -210,26 +213,130 @@ def get_workflow_payload(workflow_name, payload):
     return workflow
 
 
-"""
-Get the filenames of the output images
-"""
 def get_filenames(output):
+    """
+    Get the filenames of the output images
+    """
     for key, value in output.items():
         if 'images' in value and isinstance(value['images'], list):
             return value['images']
 
 
-"""
-Create a unique filename prefix for each request to avoid a race condition where
-more than one request completes at the same time, which can either result in the
-incorrect output being returned, or the output image not being found.
-"""
 def create_unique_filename_prefix(payload):
+    """
+    Create a unique filename prefix for each request to avoid a race condition where
+    more than one request completes at the same time, which can either result in the
+    incorrect output being returned, or the output image not being found.
+    """
     for key, value in payload.items():
         class_type = value.get('class_type')
 
         if class_type == 'SaveImage':
             payload[key]['inputs']['filename_prefix'] = str(uuid.uuid4())
+
+
+# ---------------------------------------------------------------------------- #
+#                              Telemetry functions                             #
+# ---------------------------------------------------------------------------- #
+def get_container_memory_info():
+    """
+    Get memory information that's actually available to the container.
+    Returns a dictionary with memory stats in MB.
+    """
+    try:
+        # In Linux containers, /proc/meminfo shows container-specific memory
+        with open('/proc/meminfo', 'r') as f:
+            meminfo = f.readlines()
+
+        mem_info = {}
+        for line in meminfo:
+            if 'MemTotal:' in line:
+                mem_info['total'] = int(line.split()[1]) / 1024  # Convert from KB to MB
+            elif 'MemAvailable:' in line:
+                mem_info['available'] = int(line.split()[1]) / 1024  # Convert from KB to MB
+            elif 'MemFree:' in line:
+                mem_info['free'] = int(line.split()[1]) / 1024  # Convert from KB to MB
+
+        # Calculate used memory
+        if 'total' in mem_info and 'free' in mem_info:
+            mem_info['used'] = mem_info['total'] - mem_info['free']
+
+        return mem_info
+    except Exception as e:
+        logging.error(f'Error getting container memory info: {str(e)}')
+        return {}
+
+
+def get_container_cpu_info():
+    """
+    Get CPU information that's actually available to the container.
+    Returns a dictionary with CPU stats.
+    """
+    try:
+        # Get CPU usage from /proc/stat (first line shows total CPU usage)
+        with open('/proc/stat', 'r') as f:
+            cpu_line = f.readline().strip()
+
+        # Get container CPU quota from cgroups
+        cpu_quota = None
+        cpu_period = None
+
+        try:
+            # Modern cgroups v2 path
+            with open('/sys/fs/cgroup/cpu.max', 'r') as f:
+                cgroup_info = f.read().strip().split()
+                if cgroup_info[0] != 'max':
+                    cpu_quota = int(cgroup_info[0])
+                    cpu_period = int(cgroup_info[1])
+        except FileNotFoundError:
+            # Older cgroups v1 paths
+            try:
+                with open('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', 'r') as f:
+                    cpu_quota = int(f.read().strip())
+                with open('/sys/fs/cgroup/cpu/cpu.cfs_period_us', 'r') as f:
+                    cpu_period = int(f.read().strip())
+            except FileNotFoundError:
+                pass
+
+        # Count available CPUs by checking the number of processors visible
+        available_cpus = 0
+        with open('/proc/cpuinfo', 'r') as f:
+            for line in f:
+                if line.startswith('processor'):
+                    available_cpus += 1
+
+        # If we have quota and period, we can calculate allocated CPUs
+        allocated_cpus = None
+        if cpu_quota and cpu_period and cpu_quota > 0:
+            allocated_cpus = cpu_quota / cpu_period
+
+        # Get current CPU usage
+        cpu_info = {
+            'available_cpus': available_cpus
+        }
+
+        if allocated_cpus:
+            cpu_info['allocated_cpus'] = allocated_cpus
+
+        # Parse /proc/stat for CPU usage
+        if cpu_line.startswith('cpu '):
+            values = cpu_line.split()[1:]
+            values = [int(val) for val in values]
+            # First 3 values are user, nice, system times
+            cpu_info['user'] = values[0]
+            cpu_info['nice'] = values[1]
+            cpu_info['system'] = values[2]
+            cpu_info['idle'] = values[3]
+
+            # Calculate total CPU time
+            total_cpu_time = sum(values)
+            if total_cpu_time > 0:
+                cpu_info['usage_percent'] = 100 - (values[3] * 100 / total_cpu_time)
+
+        return cpu_info
+    except Exception as e:
+        logging.error(f'Error getting container CPU info: {str(e)}')
+        return {}
 
 
 # ---------------------------------------------------------------------------- #
@@ -240,6 +347,19 @@ def handler(event):
     os.environ['RUNPOD_JOB_ID'] = job_id
 
     try:
+        memory_info = get_container_memory_info()
+        cpu_info = get_container_cpu_info()
+
+        logging.info(f"Container Memory (MB): Total={memory_info.get('total', 'N/A'):.2f}, Available={memory_info.get('available', 'N/A'):.2f}, Used={memory_info.get('used', 'N/A'):.2f}", job_id)
+
+        if 'allocated_cpus' in cpu_info:
+            logging.info(f"Container CPU: Allocated={cpu_info.get('allocated_cpus', 'N/A'):.2f}, Available={cpu_info.get('available_cpus', 'N/A')}", job_id)
+        else:
+            logging.info(f"Container CPU: Available={cpu_info.get('available_cpus', 'N/A')}", job_id)
+
+        if 'usage_percent' in cpu_info:
+            logging.info(f"CPU Usage: {cpu_info.get('usage_percent', 'N/A'):.2f}%", job_id)
+
         validated_input = validate(event['input'], INPUT_SCHEMA)
 
         if 'errors' in validated_input:
