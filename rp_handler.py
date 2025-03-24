@@ -238,104 +238,187 @@ def create_unique_filename_prefix(payload):
 # ---------------------------------------------------------------------------- #
 #                              Telemetry functions                             #
 # ---------------------------------------------------------------------------- #
-def get_container_memory_info():
+def get_container_memory_info(job_id=None):
     """
-    Get memory information that's actually available to the container.
+    Get memory information that's actually allocated to the container using cgroups.
     Returns a dictionary with memory stats in MB.
+    Also logs the memory information directly.
     """
     try:
-        # In Linux containers, /proc/meminfo shows container-specific memory
-        with open('/proc/meminfo', 'r') as f:
-            meminfo = f.readlines()
-
         mem_info = {}
-        for line in meminfo:
-            if 'MemTotal:' in line:
-                mem_info['total'] = int(line.split()[1]) / 1024  # Convert from KB to MB
-            elif 'MemAvailable:' in line:
-                mem_info['available'] = int(line.split()[1]) / 1024  # Convert from KB to MB
-            elif 'MemFree:' in line:
-                mem_info['free'] = int(line.split()[1]) / 1024  # Convert from KB to MB
 
-        # Calculate used memory
-        if 'total' in mem_info and 'free' in mem_info:
-            mem_info['used'] = mem_info['total'] - mem_info['free']
+        # First try to get host memory information as fallback
+        try:
+            with open('/proc/meminfo', 'r') as f:
+                meminfo = f.readlines()
+
+            for line in meminfo:
+                if 'MemTotal:' in line:
+                    mem_info['total'] = int(line.split()[1]) / 1024  # Convert from KB to MB
+                elif 'MemAvailable:' in line:
+                    mem_info['available'] = int(line.split()[1]) / 1024  # Convert from KB to MB
+                elif 'MemFree:' in line:
+                    mem_info['free'] = int(line.split()[1]) / 1024  # Convert from KB to MB
+
+            # Calculate used memory (may be overridden by container-specific value below)
+            if 'total' in mem_info and 'free' in mem_info:
+                mem_info['used'] = mem_info['total'] - mem_info['free']
+        except Exception as e:
+            logging.warning(f"Failed to read host memory info: {str(e)}", job_id)
+
+        # Try cgroups v2 path first (modern Docker)
+        try:
+            with open('/sys/fs/cgroup/memory.max', 'r') as f:
+                max_mem = f.read().strip()
+                if max_mem != 'max':  # If set to 'max', it means unlimited
+                    mem_info['limit'] = int(max_mem) / (1024 * 1024)  # Convert B to MB
+
+            with open('/sys/fs/cgroup/memory.current', 'r') as f:
+                mem_info['used'] = int(f.read().strip()) / (1024 * 1024)  # Convert B to MB
+
+        except FileNotFoundError:
+            # Fall back to cgroups v1 paths (older Docker)
+            try:
+                with open('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'r') as f:
+                    mem_limit = int(f.read().strip())
+                    # If the value is very large (close to 2^64), it's effectively unlimited
+                    if mem_limit < 2**63:
+                        mem_info['limit'] = mem_limit / (1024 * 1024)  # Convert B to MB
+
+                with open('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'r') as f:
+                    mem_info['used'] = int(f.read().strip()) / (1024 * 1024)  # Convert B to MB
+
+            except FileNotFoundError:
+                # Try the third possible location for cgroups
+                try:
+                    with open('/sys/fs/cgroup/memory.limit_in_bytes', 'r') as f:
+                        mem_limit = int(f.read().strip())
+                        if mem_limit < 2**63:
+                            mem_info['limit'] = mem_limit / (1024 * 1024)
+
+                    with open('/sys/fs/cgroup/memory.usage_in_bytes', 'r') as f:
+                        mem_info['used'] = int(f.read().strip()) / (1024 * 1024)
+
+                except FileNotFoundError:
+                    logging.warning('Could not find cgroup memory information', job_id)
+
+        # Calculate available memory if we have both limit and used
+        if 'limit' in mem_info and 'used' in mem_info:
+            mem_info['available'] = mem_info['limit'] - mem_info['used']
+
+        # Log memory information
+        mem_log_parts = []
+        if 'total' in mem_info:
+            mem_log_parts.append(f"Total={mem_info['total']:.2f}")
+        if 'limit' in mem_info:
+            mem_log_parts.append(f"Limit={mem_info['limit']:.2f}")
+        if 'used' in mem_info:
+            mem_log_parts.append(f"Used={mem_info['used']:.2f}")
+        if 'available' in mem_info:
+            mem_log_parts.append(f"Available={mem_info['available']:.2f}")
+        if 'free' in mem_info:
+            mem_log_parts.append(f"Free={mem_info['free']:.2f}")
+
+        if mem_log_parts:
+            logging.info(f"Container Memory (MB): {', '.join(mem_log_parts)}", job_id)
+        else:
+            logging.info('Container memory information not available', job_id)
 
         return mem_info
     except Exception as e:
-        logging.error(f'Error getting container memory info: {str(e)}')
+        logging.error(f'Error getting container memory info: {str(e)}', job_id)
         return {}
 
 
-def get_container_cpu_info():
+def get_container_cpu_info(job_id=None):
     """
-    Get CPU information that's actually available to the container.
+    Get CPU information that's actually allocated to the container using cgroups.
     Returns a dictionary with CPU stats.
+    Also logs the CPU information directly.
     """
     try:
-        # Get CPU usage from /proc/stat (first line shows total CPU usage)
-        with open('/proc/stat', 'r') as f:
-            cpu_line = f.readline().strip()
+        cpu_info = {}
 
-        # Get container CPU quota from cgroups
-        cpu_quota = None
-        cpu_period = None
-
+        # First get the number of CPUs visible to the container
         try:
-            # Modern cgroups v2 path
+            # Count available CPUs by checking /proc/cpuinfo
+            available_cpus = 0
+            with open('/proc/cpuinfo', 'r') as f:
+                for line in f:
+                    if line.startswith('processor'):
+                        available_cpus += 1
+            if available_cpus > 0:
+                cpu_info['available_cpus'] = available_cpus
+        except Exception as e:
+            logging.warning(f'Failed to get available CPUs: {str(e)}', job_id)
+
+        # Try getting CPU quota and period from cgroups v2
+        try:
             with open('/sys/fs/cgroup/cpu.max', 'r') as f:
-                cgroup_info = f.read().strip().split()
-                if cgroup_info[0] != 'max':
-                    cpu_quota = int(cgroup_info[0])
-                    cpu_period = int(cgroup_info[1])
+                cpu_data = f.read().strip().split()
+                if cpu_data[0] != 'max':
+                    cpu_quota = int(cpu_data[0])
+                    cpu_period = int(cpu_data[1])
+                    # Calculate the number of CPUs as quota/period
+                    cpu_info['allocated_cpus'] = cpu_quota / cpu_period
         except FileNotFoundError:
-            # Older cgroups v1 paths
+            # Try cgroups v1 paths
             try:
                 with open('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', 'r') as f:
                     cpu_quota = int(f.read().strip())
                 with open('/sys/fs/cgroup/cpu/cpu.cfs_period_us', 'r') as f:
                     cpu_period = int(f.read().strip())
+                if cpu_quota > 0:  # -1 means no limit
+                    cpu_info['allocated_cpus'] = cpu_quota / cpu_period
             except FileNotFoundError:
-                pass
+                # Try another possible location
+                try:
+                    with open('/sys/fs/cgroup/cpu.cfs_quota_us', 'r') as f:
+                        cpu_quota = int(f.read().strip())
+                    with open('/sys/fs/cgroup/cpu.cfs_period_us', 'r') as f:
+                        cpu_period = int(f.read().strip())
+                    if cpu_quota > 0:
+                        cpu_info['allocated_cpus'] = cpu_quota / cpu_period
+                except FileNotFoundError:
+                    logging.warning('Could not find cgroup CPU quota information', job_id)
 
-        # Count available CPUs by checking the number of processors visible
-        available_cpus = 0
-        with open('/proc/cpuinfo', 'r') as f:
-            for line in f:
-                if line.startswith('processor'):
-                    available_cpus += 1
+        # Get container CPU usage stats
+        try:
+            # Try cgroups v2 path
+            with open('/sys/fs/cgroup/cpu.stat', 'r') as f:
+                for line in f:
+                    if line.startswith('usage_usec'):
+                        cpu_info['usage_usec'] = int(line.split()[1])
+                        break
+        except FileNotFoundError:
+            # Try cgroups v1 path
+            try:
+                with open('/sys/fs/cgroup/cpu/cpuacct.usage', 'r') as f:
+                    cpu_info['usage_usec'] = int(f.read().strip()) / 1000  # Convert ns to μs
+            except FileNotFoundError:
+                try:
+                    with open('/sys/fs/cgroup/cpuacct.usage', 'r') as f:
+                        cpu_info['usage_usec'] = int(f.read().strip()) / 1000
+                except FileNotFoundError:
+                    pass
 
-        # If we have quota and period, we can calculate allocated CPUs
-        allocated_cpus = None
-        if cpu_quota and cpu_period and cpu_quota > 0:
-            allocated_cpus = cpu_quota / cpu_period
+        # Log CPU information
+        cpu_log_parts = []
+        if 'allocated_cpus' in cpu_info:
+            cpu_log_parts.append(f"Allocated CPUs={cpu_info['allocated_cpus']:.2f}")
+        if 'available_cpus' in cpu_info:
+            cpu_log_parts.append(f"Available CPUs={cpu_info['available_cpus']}")
+        if 'usage_usec' in cpu_info:
+            cpu_log_parts.append(f"Usage={cpu_info['usage_usec']/1000000:.2f}s")
 
-        # Get current CPU usage
-        cpu_info = {
-            'available_cpus': available_cpus
-        }
-
-        if allocated_cpus:
-            cpu_info['allocated_cpus'] = allocated_cpus
-
-        # Parse /proc/stat for CPU usage
-        if cpu_line.startswith('cpu '):
-            values = cpu_line.split()[1:]
-            values = [int(val) for val in values]
-            # First 3 values are user, nice, system times
-            cpu_info['user'] = values[0]
-            cpu_info['nice'] = values[1]
-            cpu_info['system'] = values[2]
-            cpu_info['idle'] = values[3]
-
-            # Calculate total CPU time
-            total_cpu_time = sum(values)
-            if total_cpu_time > 0:
-                cpu_info['usage_percent'] = 100 - (values[3] * 100 / total_cpu_time)
+        if cpu_log_parts:
+            logging.info(f"Container CPU: {', '.join(cpu_log_parts)}", job_id)
+        else:
+            logging.info('Container CPU allocation information not available', job_id)
 
         return cpu_info
     except Exception as e:
-        logging.error(f'Error getting container CPU info: {str(e)}')
+        logging.error(f'Error getting container CPU info: {str(e)}', job_id)
         return {}
 
 
@@ -347,18 +430,8 @@ def handler(event):
     os.environ['RUNPOD_JOB_ID'] = job_id
 
     try:
-        memory_info = get_container_memory_info()
-        cpu_info = get_container_cpu_info()
-
-        logging.info(f"Container Memory (MB): Total={memory_info.get('total', 'N/A'):.2f}, Available={memory_info.get('available', 'N/A'):.2f}, Used={memory_info.get('used', 'N/A'):.2f}", job_id)
-
-        if 'allocated_cpus' in cpu_info:
-            logging.info(f"Container CPU: Allocated={cpu_info.get('allocated_cpus', 'N/A'):.2f}, Available={cpu_info.get('available_cpus', 'N/A')}", job_id)
-        else:
-            logging.info(f"Container CPU: Available={cpu_info.get('available_cpus', 'N/A')}", job_id)
-
-        if 'usage_percent' in cpu_info:
-            logging.info(f"CPU Usage: {cpu_info.get('usage_percent', 'N/A'):.2f}%", job_id)
+        memory_info = get_container_memory_info(job_id)
+        cpu_info = get_container_cpu_info(job_id)
 
         validated_input = validate(event['input'], INPUT_SCHEMA)
 
