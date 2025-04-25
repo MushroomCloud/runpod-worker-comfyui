@@ -213,13 +213,18 @@ def get_workflow_payload(workflow_name, payload):
     return workflow
 
 
-def get_filenames(output):
+def get_output_images(output):
     """
-    Get the filenames of the output images
+    Get the output images
     """
+    images = []
+
     for key, value in output.items():
         if 'images' in value and isinstance(value['images'], list):
-            return value['images']
+            images.append(value['images'][0])
+
+    return images
+
 
 
 def create_unique_filename_prefix(payload):
@@ -494,21 +499,32 @@ def handler(event):
 
                 if len(outputs):
                     logging.info(f'Images generated successfully for prompt: {prompt_id}', job_id)
-                    image_filenames = get_filenames(outputs)
+                    output_images = get_output_images(outputs)
                     images = []
 
-                    for image_filename in image_filenames:
-                        filename = image_filename['filename']
-                        image_path = f'{VOLUME_MOUNT_PATH}/ComfyUI/output/{filename}'
+                    for output_image in output_images:
+                        print(output_image)
+                        filename = output_image.get('filename')
 
-                        if os.path.exists(image_path):
-                            with open(image_path, 'rb') as image_file:
-                                images.append(base64.b64encode(image_file.read()).decode('utf-8'))
+                        if output_image['type'] == 'output':
+                            image_path = f'{VOLUME_MOUNT_PATH}/ComfyUI/output/{filename}'
+                            logging.info(f"image_path (output): {image_path}")
 
-                            logging.info(f'Deleting output file: {image_path}', job_id)
-                            os.remove(image_path)
-                        else:
-                            logging.error(f'Output file {image_path} not found')
+                            if os.path.exists(image_path):
+                                with open(image_path, 'rb') as image_file:
+                                    image_data = base64.b64encode(image_file.read()).decode('utf-8')
+                                    images.append(image_data)
+                                    logging.info(f'Processed output file: {image_path}')
+                                    # Uncomment if you want to delete files after processing
+                                    # logging.info(f'Deleting output file: {image_path}')
+                                    # os.remove(image_path)
+                        elif output_image['type'] == 'temp':
+                            image_path = f'{VOLUME_MOUNT_PATH}/ComfyUI/temp/{filename}'
+                            logging.info(f"image_path (temp): {image_path}")
+
+                            # Clean up temp images that aren't used by the API
+                            if os.path.exists(image_path):
+                                os.remove(image_path)
 
                     return {
                         'images': images
