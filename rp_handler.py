@@ -503,27 +503,23 @@ def handler(event):
                     images = []
 
                     for output_image in output_images:
-                        print(output_image)
                         filename = output_image.get('filename')
 
                         if output_image['type'] == 'output':
                             image_path = f'{VOLUME_MOUNT_PATH}/ComfyUI/output/{filename}'
-                            logging.info(f"image_path (output): {image_path}")
 
                             if os.path.exists(image_path):
                                 with open(image_path, 'rb') as image_file:
                                     image_data = base64.b64encode(image_file.read()).decode('utf-8')
                                     images.append(image_data)
-                                    logging.info(f'Processed output file: {image_path}')
-                                    # Uncomment if you want to delete files after processing
-                                    # logging.info(f'Deleting output file: {image_path}')
-                                    # os.remove(image_path)
+                                    logging.info(f'Deleting output file: {image_path}')
+                                    os.remove(image_path)
                         elif output_image['type'] == 'temp':
                             image_path = f'{VOLUME_MOUNT_PATH}/ComfyUI/temp/{filename}'
-                            logging.info(f"image_path (temp): {image_path}")
 
                             # Clean up temp images that aren't used by the API
                             if os.path.exists(image_path):
+                                logging.info(f"Deleting temp file: {image_path}")
                                 os.remove(image_path)
 
                     return {
